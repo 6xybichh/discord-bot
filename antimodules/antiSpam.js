@@ -302,8 +302,14 @@ class AntiSpamModule {
     }
     
     async executeAction(message, action, duration, violations, config) {
+        const { PermissionsBitField } = require('discord.js');
         const member = message.guild.members.cache.get(message.author.id);
         if (!member) return;
+        
+        // Check if bot has required permissions
+        const botMember = message.guild.members.cache.get(message.client.user.id);
+        const hasModeratePerms = botMember?.permissions.has(PermissionsBitField.Flags.ModerateMembers);
+        const hasBanPerms = botMember?.permissions.has(PermissionsBitField.Flags.BanMembers);
         
         try {
             await message.delete().catch(() => {});
@@ -316,6 +322,13 @@ class AntiSpamModule {
                     break;
                     
                 case 'timeout':
+                    if (!hasModeratePerms) {
+                        console.warn(`Missing MODERATE_MEMBERS permission for timeout action in ${message.guild.name}`);
+                        await message.channel.send(
+                            `⚠️ ${message.author}, spam detected but I lack permissions to timeout. Please contact server staff.`
+                        ).then(msg => setTimeout(() => msg.delete().catch(() => {}), 10000));
+                        break;
+                    }
                     await member.timeout(duration, `Anti-spam: ${violations[0].description}`);
                     await message.channel.send(
                         `🔇 ${message.author} has been timed out for ${duration/1000}s for spamming.`
@@ -326,6 +339,13 @@ class AntiSpamModule {
                     if (config.punishmentSystem.useQuarantine) {
                         await this.quarantineUser(member, violations, config);
                     } else {
+                        if (!hasBanPerms) {
+                            console.warn(`Missing BAN_MEMBERS permission for ban action in ${message.guild.name}`);
+                            await message.channel.send(
+                                `⚠️ ${message.author}, spam detected but I lack permissions to ban. Please contact server staff.`
+                            ).then(msg => setTimeout(() => msg.delete().catch(() => {}), 10000));
+                            break;
+                        }
                         await member.ban({ reason: `Anti-spam: ${violations[0].description}` });
                     }
                     break;

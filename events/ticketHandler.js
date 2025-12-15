@@ -122,6 +122,14 @@ module.exports = (client) => {
         else if (interaction.isButton() && interaction.customId.startsWith('delete_ticket_')) {
             await handleTicketDelete(interaction, client);
         }
+
+        else if (interaction.isButton() && interaction.customId.startsWith('reopen_closed_ticket_')) {
+            await handleReopenClosedTicket(interaction, client);
+        }
+
+        else if (interaction.isButton() && interaction.customId.startsWith('delete_closed_ticket_')) {
+            await handleDeleteClosedTicket(interaction, client);
+        }
     });
 
    
@@ -462,7 +470,22 @@ async function handleTicketClose(interaction, client) {
                             .setDescription('This ticket has been closed and moved to the archive. You can still view the conversation but cannot send messages.\n\n⏰ This channel will be automatically deleted after 24 hours.')
                             .setTimestamp();
 
-                        await channel.send({ embeds: [closedEmbed] });
+                        const reopenButton = new ButtonBuilder()
+                            .setCustomId(`reopen_closed_ticket_${ticketId}`)
+                            .setLabel('Reopen Ticket')
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('🔄');
+
+                        const deleteButton = new ButtonBuilder()
+                            .setCustomId(`delete_closed_ticket_${ticketId}`)
+                            .setLabel('Delete Ticket')
+                            .setStyle(ButtonStyle.Danger)
+                            .setEmoji('❌');
+
+                        const closedActionRow = new ActionRowBuilder()
+                            .addComponents(reopenButton, deleteButton);
+
+                        await channel.send({ embeds: [closedEmbed], components: [closedActionRow] });
                         
                         // Update closedAt timestamp
                         await TicketUserData.updateOne({ userId, guildId: guild.id }, { closedAt: new Date() });
@@ -614,7 +637,22 @@ async function autoCloseInactiveTickets(client) {
                                 .setDescription('This ticket was automatically closed due to 72 hours of inactivity.\n\n⏰ This channel will be automatically deleted after 24 hours.')
                                 .setTimestamp();
 
-                            await channel.send({ embeds: [closedEmbed] });
+                            const reopenButton = new ButtonBuilder()
+                                .setCustomId(`reopen_closed_ticket_${ticket._id}`)
+                                .setLabel('Reopen Ticket')
+                                .setStyle(ButtonStyle.Primary)
+                                .setEmoji('🔄');
+
+                            const deleteButton = new ButtonBuilder()
+                                .setCustomId(`delete_closed_ticket_${ticket._id}`)
+                                .setLabel('Delete Ticket')
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('❌');
+
+                            const closedActionRow = new ActionRowBuilder()
+                                .addComponents(reopenButton, deleteButton);
+
+                            await channel.send({ embeds: [closedEmbed], components: [closedActionRow] });
                             
                             // Set closedAt timestamp for auto-deletion
                             await TicketUserData.updateOne({ _id: ticket._id }, { closedAt: new Date() });
@@ -861,6 +899,147 @@ async function handleTicketDelete(interaction, client) {
         console.error(`Error deleting ticket:`, err);
         return interaction.followUp({ 
             content: '❌ Failed to delete ticket.',
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleReopenClosedTicket(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    const ticketData = await TicketUserData.findOne({ ticketChannelId: channel.id });
+    if (!ticketData) {
+        return interaction.followUp({ 
+            content: '❌ Ticket data not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isTicketOwner = user.id === ticketData.userId;
+
+    if (!isAdmin && !isTicketOwner) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members or the ticket owner can reopen this ticket.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        // Move ticket back to active category
+        if (config.categoryId) {
+            await channel.setParent(config.categoryId, { lockPermissions: false });
+            
+            // Restore permissions to allow ticket owner to send messages
+            await channel.permissionOverwrites.edit(ticketData.userId, {
+                SendMessages: true,
+                AddReactions: true
+            });
+
+            // Clear closedAt timestamp and reset activity
+            await TicketUserData.updateOne(
+                { _id: ticketData._id }, 
+                { 
+                    closedAt: null,
+                    lastActivityTime: new Date()
+                }
+            );
+
+            const reopenedEmbed = new EmbedBuilder()
+                .setColor('#00FF00')
+                .setAuthor({ name: 'Ticket Reopened', iconURL: ticketIcons.modIcon })
+                .setDescription(`This ticket has been reopened by ${user.tag}.`)
+                .setTimestamp();
+
+            await channel.send({ embeds: [reopenedEmbed] });
+
+            await interaction.followUp({ 
+                content: '✅ Ticket has been reopened successfully!',
+                ephemeral: true 
+            });
+
+            console.log(`Closed ticket ${channel.name} reopened by ${user.tag}`);
+        } else {
+            return interaction.followUp({ 
+                content: '❌ No active tickets category configured.',
+                ephemeral: true 
+            });
+        }
+    } catch (err) {
+        console.error(`Error reopening ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to reopen ticket.',
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleDeleteClosedTicket(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    if (!isAdmin) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members can permanently delete closed tickets.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        const deleteEmbed = new EmbedBuilder()
+            .setColor('#FF0000')
+            .setAuthor({ name: 'Closed Ticket Deleted', iconURL: ticketIcons.modIcon })
+            .setDescription(`This ticket is being permanently deleted by ${user.tag}. Channel will be deleted in 5 seconds.`)
+            .setTimestamp();
+
+        await channel.send({ embeds: [deleteEmbed] });
+
+        await interaction.followUp({ 
+            content: '✅ Closed ticket will be permanently deleted in 5 seconds.',
+            ephemeral: true 
+        });
+
+        setTimeout(async () => {
+            try {
+                // Remove from database
+                await TicketUserData.deleteOne({ ticketChannelId: channel.id });
+                // Delete channel
+                await channel.delete('Closed ticket permanently deleted by staff');
+                console.log(`Closed ticket channel ${channel.name} permanently deleted by ${user.tag}`);
+            } catch (err) {
+                console.error(`Error deleting closed ticket channel:`, err);
+            }
+        }, 5000);
+    } catch (err) {
+        console.error(`Error deleting closed ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to delete closed ticket.',
             ephemeral: true 
         });
     }
