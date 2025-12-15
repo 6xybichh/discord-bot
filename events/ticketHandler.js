@@ -3,6 +3,9 @@ const {
     ButtonBuilder,
     ButtonStyle,
     ActionRowBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
     StringSelectMenuBuilder,
     PermissionsBitField,
     ChannelType, AttachmentBuilder
@@ -32,6 +35,7 @@ async function loadConfig() {
                 adminRoleId: ticket.adminRoleId,
                 status: ticket.status,
                 categoryId: ticket.categoryId,
+                closedTicketsCategoryId: ticket.closedTicketsCategoryId,
                 ownerId: ticket.ownerId
             };
         }
@@ -66,12 +70,35 @@ module.exports = (client) => {
         //setInterval(() => syncTicketChannels(client), 30 * 60 * 1000); 
         
        
-        setInterval(() => cleanupStaleTickets(client), 15 * 60 * 1000); 
+        setInterval(() => cleanupStaleTickets(client), 15 * 60 * 1000);
+        
+        // Check for 72h inactive tickets and auto-close them
+        setInterval(() => autoCloseInactiveTickets(client), 60 * 60 * 1000); // Check every hour
+        
+        // Delete closed tickets after 24h
+        setInterval(() => deleteOldClosedTickets(client), 60 * 60 * 1000); // Check every hour
+    });
+
+ 
+    client.on('messageCreate', async (message) => {
+        // Track activity in ticket channels - only count messages from the ticket creator
+        if (message.author.bot) return;
+        
+        const ticketData = await TicketUserData.findOne({ ticketChannelId: message.channelId });
+        if (ticketData && message.author.id === ticketData.userId) {
+            ticketData.lastActivityTime = new Date();
+            await ticketData.save();
+        }
     });
 
  
     client.on('interactionCreate', async (interaction) => {
-   
+
+        if (interaction.isModalSubmit() && interaction.customId && interaction.customId.startsWith('ticket_modal_')) {
+            await handleTicketModalSubmit(interaction, client);
+            return;
+        }
+
         if (interaction.isStringSelectMenu() && interaction.customId === 'select_ticket_type') {
             await handleTicketCreation(interaction, client);
         } 
@@ -82,6 +109,18 @@ module.exports = (client) => {
     
         else if (interaction.isButton() && interaction.customId.startsWith('ping_staff_')) {
             await handleStaffPing(interaction, client);
+        }
+
+        else if (interaction.isButton() && interaction.customId.startsWith('claim_ticket_')) {
+            await handleTicketClaim(interaction, client);
+        }
+
+        else if (interaction.isButton() && interaction.customId.startsWith('pin_ticket_')) {
+            await handleTicketPin(interaction, client);
+        }
+
+        else if (interaction.isButton() && interaction.customId.startsWith('delete_ticket_')) {
+            await handleTicketDelete(interaction, client);
         }
     });
 
@@ -174,128 +213,133 @@ async function sendTicketEmbed(channel) {
 
 
 async function handleTicketCreation(interaction, client) {
-    await interaction.deferReply({ ephemeral: true });
-
     const { guild, user, values } = interaction;
     const ticketType = values[0];
 
-  
     const config = await TicketConfig.findOne({ serverId: guild.id });
     if (!config || !config.status) {
-        return interaction.followUp({ 
+        return interaction.reply({ 
             content: '⚠️ Ticket system is not configured or is disabled.',
             ephemeral: true 
         });
     }
 
-    
-    const existingTicket = await TicketUserData.findOne({ 
-        userId: user.id, 
-        guildId: guild.id 
-    });
-    
+    const existingTicket = await TicketUserData.findOne({ userId: user.id, guildId: guild.id });
     if (existingTicket) {
         const existingChannel = guild.channels.cache.get(existingTicket.ticketChannelId);
         if (existingChannel) {
-            return interaction.followUp({
-                content: `❌ You already have an open ticket: ${existingChannel}`,
-                ephemeral: true
-            });
+            return interaction.reply({ content: `❌ You already have an open ticket: ${existingChannel}`, ephemeral: true });
         } else {
-          
             await TicketUserData.deleteOne({ _id: existingTicket._id });
         }
     }
 
-  
+    // Show modal to collect reason/product details from user
+    try {
+        const modal = new ModalBuilder()
+            .setCustomId(`ticket_modal_${guild.id}_${ticketType}_${user.id}`)
+            .setTitle(`${ticketType.charAt(0).toUpperCase() + ticketType.slice(1)} Ticket Details`);
+
+        const reasonInput = new TextInputBuilder()
+            .setCustomId('ticket_reason')
+            .setLabel('Reason / Product name')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setPlaceholder('Describe the issue or enter product/service name');
+
+        modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+
+        await interaction.showModal(modal);
+        return; // modal will be handled in modal submit handler
+    } catch (err) {
+        console.error('Failed to show ticket modal:', err);
+        return interaction.reply({ content: '❌ Failed to open reason prompt. Please try again.', ephemeral: true });
+    }
+}
+
+async function handleTicketModalSubmit(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const customParts = interaction.customId.split('_');
+    // format: ticket_modal_<guildId>_<ticketType>_<userId>
+    const guildId = customParts[2];
+    const ticketType = customParts[3];
+    const initiatorId = customParts[4];
+
+    const reason = interaction.fields.getTextInputValue('ticket_reason')?.trim();
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return interaction.followUp({ content: '❌ Guild not found.', ephemeral: true });
+
+    const user = await client.users.fetch(initiatorId).catch(() => null);
+    if (!user) return interaction.followUp({ content: '❌ User not found.', ephemeral: true });
+
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    if (!config || !config.status) {
+        return interaction.followUp({ content: '⚠️ Ticket system is not configured or is disabled.', ephemeral: true });
+    }
+
+    const existingTicket = await TicketUserData.findOne({ userId: user.id, guildId: guild.id });
+    if (existingTicket) {
+        const existingChannel = guild.channels.cache.get(existingTicket.ticketChannelId);
+        if (existingChannel) {
+            return interaction.followUp({ content: `❌ You already have an open ticket: ${existingChannel}`, ephemeral: true });
+        } else {
+            await TicketUserData.deleteOne({ _id: existingTicket._id });
+        }
+    }
+
     try {
         const ticketChannel = await guild.channels.create({
             name: `${user.username}-${ticketType}`,
             type: ChannelType.GuildText,
             parent: config.categoryId || null,
             permissionOverwrites: [
-                { 
-                    id: guild.roles.everyone, 
-                    deny: [PermissionsBitField.Flags.ViewChannel] 
-                },
-                { 
-                    id: user.id, 
-                    allow: [
-                        PermissionsBitField.Flags.ViewChannel, 
-                        PermissionsBitField.Flags.SendMessages, 
-                        PermissionsBitField.Flags.ReadMessageHistory
-                    ] 
-                },
-                { 
-                    id: config.adminRoleId, 
-                    allow: [
-                        PermissionsBitField.Flags.ViewChannel, 
-                        PermissionsBitField.Flags.SendMessages, 
-                        PermissionsBitField.Flags.ReadMessageHistory
-                    ] 
-                }
+                { id: guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
+                { id: user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+                { id: config.adminRoleId, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] }
             ]
         });
 
-        
-        await TicketUserData.create({
-            userId: user.id,
-            guildId: guild.id,
-            ticketChannelId: ticketChannel.id
-        });
+        await TicketUserData.create({ userId: user.id, guildId: guild.id, ticketChannelId: ticketChannel.id, reason });
 
-      
         const ticketId = `${user.id}-${ticketChannel.id}`;
+        const ticketTypeDisplay = ticketType.charAt(0).toUpperCase() + ticketType.slice(1);
+
         const ticketEmbed = new EmbedBuilder()
-            .setAuthor({ name: `${ticketType.charAt(0).toUpperCase() + ticketType.slice(1)} Ticket`, iconURL: ticketIcons.modIcon })
-            .setDescription(`Hello ${user}, welcome to our support!\nPlease describe your issue in detail.`)
+            .setTitle(`${ticketTypeDisplay} Ticket`)
+            .setColor('#FF6B00')
+            .setDescription(
+                '❌ **Please provide us with a detailed description of your issue!**\n' +
+                '❌ **The support staff are human volunteers, so please be patient – you\'ll get an answer as soon as possible.**\n\n' +
+                `**The Name Detail Of ${ticketTypeDisplay.toLowerCase()} You Want To Buy.**\n\n` +
+                '```\n' +
+                (reason || '[No reason provided]') + '\n' +
+                '```\n\n' +
+                '⏰ **This ticket will be autoclosed when inactive for 72h!**'
+            )
             .setFooter({ text: 'Your satisfaction is our priority', iconURL: ticketIcons.heartIcon })
-            .setColor('#00FF00')
             .setTimestamp();
 
-        const closeButton = new ButtonBuilder()
-            .setCustomId(`close_ticket_${ticketId}`)
-            .setLabel('Close Ticket')
-            .setStyle(ButtonStyle.Danger);
+        const claimButton = new ButtonBuilder().setCustomId(`claim_ticket_${ticketId}`).setLabel('Claim Ticket').setStyle(ButtonStyle.Success).setEmoji('👉');
+        const pinButton = new ButtonBuilder().setCustomId(`pin_ticket_${ticketId}`).setLabel('Pin Ticket').setStyle(ButtonStyle.Secondary).setEmoji('📌');
+        const closeButton = new ButtonBuilder().setCustomId(`close_ticket_${ticketId}`).setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒');
+        const deleteButton = new ButtonBuilder().setCustomId(`delete_ticket_${ticketId}`).setLabel('Delete Ticket').setStyle(ButtonStyle.Danger).setEmoji('❌');
 
-        const pingButton = new ButtonBuilder()
-            .setCustomId(`ping_staff_${ticketId}`)
-            .setLabel('Ping Staff')
-            .setStyle(ButtonStyle.Primary);
+        const actionRow1 = new ActionRowBuilder().addComponents(claimButton, pinButton);
+        const actionRow2 = new ActionRowBuilder().addComponents(closeButton, deleteButton);
 
-        const actionRow = new ActionRowBuilder().addComponents(closeButton, pingButton);
+        const pingContent = config?.adminRoleId ? `${user} <@&${config.adminRoleId}>` : `${user}`;
+        const allowedMentions = { users: [user.id] };
+        if (config?.adminRoleId) allowedMentions.roles = [config.adminRoleId];
 
-        await ticketChannel.send({ 
-            content: `${user}`, 
-            embeds: [ticketEmbed], 
-            components: [actionRow] 
-        });
+        await ticketChannel.send({ content: pingContent, embeds: [ticketEmbed], components: [actionRow1, actionRow2], allowedMentions });
 
-      
-        try {
-            const confirmEmbed = new EmbedBuilder()
-                .setColor(0x0099ff)
-                .setAuthor({ name: "Ticket Created!", iconURL: ticketIcons.correctIcon })
-                .setDescription(`Your **${ticketType}** ticket has been created.`)
-                .addFields({ name: 'Ticket Channel', value: `${ticketChannel.url}` })
-                .setFooter({ text: 'Thank you for reaching out!', iconURL: ticketIcons.modIcon })
-                .setTimestamp();
+        try { await user.send({ embeds: [new EmbedBuilder().setColor(0x0099ff).setAuthor({ name: 'Ticket Created!', iconURL: ticketIcons.correctIcon }).setDescription(`Your **${ticketType}** ticket has been created.`).addFields({ name: 'Ticket Channel', value: `${ticketChannel.url}` }).setFooter({ text: 'Thank you for reaching out!', iconURL: ticketIcons.modIcon }).setTimestamp()] }); } catch (err) { console.log(`Could not send DM to user ${user.tag}`); }
 
-            await user.send({ embeds: [confirmEmbed] });
-        } catch (err) {
-            console.log(`Could not send DM to user ${user.tag}`);
-        }
-
-        return interaction.followUp({ 
-            content: `✅ Your ticket has been created: ${ticketChannel}`,
-            ephemeral: true 
-        });
+        return interaction.followUp({ content: `✅ Your ticket has been created: ${ticketChannel}`, ephemeral: true });
     } catch (err) {
         console.error(`Error creating ticket for ${user.tag}:`, err);
-        return interaction.followUp({ 
-            content: '❌ Failed to create your ticket. Please try again later.',
-            ephemeral: true 
-        });
+        return interaction.followUp({ content: '❌ Failed to create your ticket. Please try again later.', ephemeral: true });
     }
 }
 
@@ -395,29 +439,49 @@ async function handleTicketClose(interaction, client) {
             ephemeral: true 
         });
 
+        // Move ticket to closed tickets category
+        setTimeout(async () => {
+            try {
+                const channel = await guild.channels.fetch(channelId).catch(() => null);
+                if (channel && config.closedTicketsCategoryId) {
+                    try {
+                        await channel.setParent(config.closedTicketsCategoryId, { lockPermissions: false });
+                        
+                        // Update permissions to make it read-only for ticket owner
+                        const ticketOwnerOverwrite = channel.permissionOverwrites.cache.get(userId);
+                        if (ticketOwnerOverwrite) {
+                            await channel.permissionOverwrites.edit(userId, {
+                                SendMessages: false,
+                                AddReactions: false
+                            });
+                        }
 
-setTimeout(async () => {
-    try {
-        const channel = await guild.channels.fetch(channelId).catch(() => null);
-        if (channel) {
-            await channel.delete();
-            console.log(`Deleted ticket channel: ${channel.id}`);
-        } else {
-            console.warn(`Channel ${channelId} not found. Possibly already deleted.`);
-        }
+                        const closedEmbed = new EmbedBuilder()
+                            .setColor('#808080')
+                            .setAuthor({ name: 'Ticket Closed & Archived', iconURL: ticketIcons.modIcon })
+                            .setDescription('This ticket has been closed and moved to the archive. You can still view the conversation but cannot send messages.\n\n⏰ This channel will be automatically deleted after 24 hours.')
+                            .setTimestamp();
 
-        await TicketUserData.deleteOne({ userId, guildId: guild.id });
+                        await channel.send({ embeds: [closedEmbed] });
+                        
+                        // Update closedAt timestamp
+                        await TicketUserData.updateOne({ userId, guildId: guild.id }, { closedAt: new Date() });
+                        console.log(`Moved ticket channel ${channel.id} to closed tickets category`);
+                    } catch (moveErr) {
+                        console.error(`Failed to move ticket to closed category:`, moveErr);
+                    }
+                } else if (channel && !config.closedTicketsCategoryId) {
+                    // Delete if no closed tickets category is configured
+                    await channel.delete();
+                    console.log(`Deleted ticket channel: ${channel.id}`);
+                }
 
-     
-        try {
-            await fs.unlink(transcriptAttachment.attachment);
-        } catch (err) {
-            console.warn("Failed to delete transcript file:", err.message);
-        }
-    } catch (err) {
-        console.error("Error while closing ticket:", err);
-    }
-}, 5000);
+                await TicketUserData.deleteOne({ userId, guildId: guild.id });
+
+            } catch (err) {
+                console.error("Error while closing ticket:", err);
+            }
+        }, 5000);
 
     } catch (err) {
         console.error("Error generating transcript:", err);
@@ -500,6 +564,114 @@ async function cleanupStaleTickets(client) {
         }
     }
 }
+
+async function autoCloseInactiveTickets(client) {
+    try {
+        const INACTIVITY_TIMEOUT = 72 * 60 * 60 * 1000; // 72 hours in milliseconds
+        const now = Date.now();
+        const inactiveTickets = await TicketUserData.find({ 
+            lastActivityTime: { $lt: new Date(now - INACTIVITY_TIMEOUT) }
+        });
+
+        for (const ticket of inactiveTickets) {
+            const guild = client.guilds.cache.get(ticket.guildId);
+            if (!guild) continue;
+
+            const channel = guild.channels.cache.get(ticket.ticketChannelId);
+            if (!channel) {
+                await TicketUserData.deleteOne({ _id: ticket._id });
+                continue;
+            }
+
+            try {
+                const config = await TicketConfig.findOne({ serverId: guild.id });
+                if (!config) continue;
+
+                // Send warning message about auto-close
+                const warningEmbed = new EmbedBuilder()
+                    .setColor('#FF6B00')
+                    .setTitle('⏰ Ticket Auto-Closing')
+                    .setDescription(`This ticket has been inactive for 72 hours and will be automatically closed in 5 seconds.\n\nIf you need further assistance, please open a new ticket.`)
+                    .setTimestamp();
+
+                await channel.send({ embeds: [warningEmbed] });
+
+                // Move to closed category after 5 seconds
+                setTimeout(async () => {
+                    try {
+                        if (config.closedTicketsCategoryId) {
+                            await channel.setParent(config.closedTicketsCategoryId, { lockPermissions: false });
+                            
+                            // Update permissions to make it read-only
+                            await channel.permissionOverwrites.edit(ticket.userId, {
+                                SendMessages: false,
+                                AddReactions: false
+                            });
+
+                            const closedEmbed = new EmbedBuilder()
+                                .setColor('#808080')
+                                .setAuthor({ name: 'Ticket Auto-Closed', iconURL: ticketIcons.modIcon })
+                                .setDescription('This ticket was automatically closed due to 72 hours of inactivity.\n\n⏰ This channel will be automatically deleted after 24 hours.')
+                                .setTimestamp();
+
+                            await channel.send({ embeds: [closedEmbed] });
+                            
+                            // Set closedAt timestamp for auto-deletion
+                            await TicketUserData.updateOne({ _id: ticket._id }, { closedAt: new Date() });
+                            console.log(`Auto-closed inactive ticket: ${channel.name} (${channel.id})`);
+                        } else {
+                            // Delete if no closed category
+                            await channel.delete('Auto-closed due to 72h inactivity');
+                            console.log(`Auto-deleted inactive ticket: ${channel.name} (${channel.id})`);
+                        }
+                    } catch (err) {
+                        console.error(`Error auto-closing ticket ${channel.id}:`, err);
+                    }
+                }, 5000);
+
+                // Mark for removal from active tickets
+                await TicketUserData.deleteOne({ _id: ticket._id });
+            } catch (err) {
+                console.error(`Error processing inactive ticket ${ticket.ticketChannelId}:`, err);
+            }
+        }
+    } catch (err) {
+        console.error('Error checking for inactive tickets:', err);
+    }
+}
+
+async function deleteOldClosedTickets(client) {
+    try {
+        const CLOSED_TICKET_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+        const now = Date.now();
+        const oldClosedTickets = await TicketUserData.find({ 
+            closedAt: { $ne: null, $lt: new Date(now - CLOSED_TICKET_TIMEOUT) }
+        });
+
+        for (const ticket of oldClosedTickets) {
+            const guild = client.guilds.cache.get(ticket.guildId);
+            if (!guild) {
+                await TicketUserData.deleteOne({ _id: ticket._id });
+                continue;
+            }
+
+            try {
+                const channel = guild.channels.cache.get(ticket.ticketChannelId);
+                if (channel) {
+                    await channel.delete('Auto-deleted: 24h closed ticket retention expired');
+                    console.log(`Auto-deleted closed ticket: ${channel.name} (${channel.id})`);
+                }
+                
+                await TicketUserData.deleteOne({ _id: ticket._id });
+            } catch (err) {
+                console.error(`Error deleting old closed ticket ${ticket.ticketChannelId}:`, err);
+            }
+        }
+    } catch (err) {
+        console.error('Error checking for old closed tickets:', err);
+    }
+}
+
 module.exports.reloadTicketConfig = async function (serverId, client) {
     console.log(`[🔁] Reloading ticket config for server: ${serverId}`);
     const updatedConfig = await TicketConfig.findOne({ serverId });
@@ -516,6 +688,7 @@ module.exports.reloadTicketConfig = async function (serverId, client) {
         adminRoleId: updatedConfig.adminRoleId,
         status: updatedConfig.status,
         categoryId: updatedConfig.categoryId,
+        closedTicketsCategoryId: updatedConfig.closedTicketsCategoryId,
         ownerId: updatedConfig.ownerId
     };
     lastConfigLoad = Date.now();
@@ -545,3 +718,150 @@ module.exports.reloadTicketConfig = async function (serverId, client) {
         console.error(`[❌] Error refreshing ticket embed for ${serverId}:`, err);
     }
 };
+
+async function handleTicketClaim(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    if (!isAdmin) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members can claim tickets.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        const claimEmbed = new EmbedBuilder()
+            .setColor('#00FF00')
+            .setAuthor({ name: 'Ticket Claimed', iconURL: ticketIcons.correctIcon })
+            .setDescription(`${user} has claimed this ticket and will assist you shortly.`)
+            .setTimestamp();
+
+        await channel.send({ embeds: [claimEmbed] });
+
+        return interaction.followUp({ 
+            content: '✅ You have claimed this ticket!',
+            ephemeral: true 
+        });
+    } catch (err) {
+        console.error(`Error claiming ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to claim ticket.',
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleTicketPin(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    if (!isAdmin) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members can pin tickets.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        const pinEmbed = new EmbedBuilder()
+            .setColor('#FFD700')
+            .setAuthor({ name: 'Ticket Pinned', iconURL: '📌' })
+            .setDescription(`This ticket has been pinned for quick access.`)
+            .setTimestamp();
+
+        await channel.send({ embeds: [pinEmbed] });
+
+        return interaction.followUp({ 
+            content: '✅ Ticket pinned!',
+            ephemeral: true 
+        });
+    } catch (err) {
+        console.error(`Error pinning ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to pin ticket.',
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleTicketDelete(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    if (!isAdmin) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members can delete tickets.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        const deleteEmbed = new EmbedBuilder()
+            .setColor('#FF0000')
+            .setAuthor({ name: 'Ticket Deleted', iconURL: ticketIcons.modIcon })
+            .setDescription(`This ticket is being deleted by ${user.tag}. Channel will be deleted in 5 seconds.`)
+            .setTimestamp();
+
+        await channel.send({ embeds: [deleteEmbed] });
+
+        await interaction.followUp({ 
+            content: '✅ Ticket will be deleted in 5 seconds.',
+            ephemeral: true 
+        });
+
+        setTimeout(async () => {
+            try {
+                await channel.delete('Ticket deleted by staff');
+                console.log(`Ticket channel ${channel.name} deleted by ${user.tag}`);
+            } catch (err) {
+                console.error(`Error deleting ticket channel:`, err);
+            }
+        }, 5000);
+    } catch (err) {
+        console.error(`Error deleting ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to delete ticket.',
+            ephemeral: true 
+        });
+    }
+}

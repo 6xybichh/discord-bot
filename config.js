@@ -1,13 +1,15 @@
 const { ActivityType } = require('discord.js');
 
 module.exports = {
-  ownerId: '1004206704994566164',
+  ownerId: '1160574083398914189',
   status: {
     rotateDefault: [
-      { name: 'Netflix', type: ActivityType.Watching },
-      { name: 'GTA VI', type: ActivityType.Playing },
-      { name: 'on YouTube', type: ActivityType.Streaming, url: 'https://www.twitch.tv/glaceytt' },
-      { name: 'Spotify', type: ActivityType.Custom },
+      { name: 'with users!', type: ActivityType.Playing },
+      { name: 'on youtube', type: ActivityType.Streaming, url: 'https://cloudox-bot-v2.onrender.com/' },
+      { name: '/help', type: ActivityType.Listening },
+      { name: 'CloudOX.space', type: ActivityType.Watching },
+      { name: '🧬Made by Scary awaz wala!', type: ActivityType.Custom },
+      { name: 'market🔥', type: ActivityType.Competing },
     ],
     songStatus: true
   },

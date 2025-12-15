@@ -7,7 +7,8 @@ const ticketConfigSchema = new mongoose.Schema({
     adminRoleId: { type: String, required: true },
     status: { type: Boolean, default: true },
     ownerId: { type: String, required: true },
-    categoryId: { type: String, default: null } 
+    categoryId: { type: String, default: null },
+    closedTicketsCategoryId: { type: String, default: null }
 });
 
 module.exports = mongoose.model('TicketConfig', ticketConfigSchema);

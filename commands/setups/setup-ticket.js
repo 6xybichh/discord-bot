@@ -38,7 +38,11 @@ module.exports = {
                         .setDescription('Ticket category for ticket channels')
                         .addChannelTypes(ChannelType.GuildCategory)
                         .setRequired(false))
-
+                .addChannelOption(option =>
+                    option.setName('closed_tickets_category')
+                        .setDescription('Category for closed ticket channels')
+                        .addChannelTypes(ChannelType.GuildCategory)
+                        .setRequired(false))
         )
         .addSubcommand(sub =>
             sub.setName('view')
@@ -62,8 +66,10 @@ module.exports = {
             const adminRole = options.getRole('admin_role');
             const status = options.getBoolean('status');
             const category = options.getChannel('ticket_category');
+            const closedCategory = options.getChannel('closed_tickets_category');
 
             let categoryId = category?.id;
+            let closedCategoryId = closedCategory?.id;
 
             if (!categoryId) {
                 // No category provided — create a default one
@@ -83,6 +89,24 @@ module.exports = {
                 }
             }
 
+            if (!closedCategoryId) {
+                // No closed tickets category provided — create a default one
+                try {
+                    const createdClosedCategory = await guild.channels.create({
+                        name: 'Closed Tickets',
+                        type: ChannelType.GuildCategory,
+                        reason: 'Default closed tickets category created by bot'
+                    });
+                    closedCategoryId = createdClosedCategory.id;
+                } catch (err) {
+                    console.error('Failed to create closed tickets category:', err);
+                    return interaction.reply({
+                        content: '❌ Failed to create closed tickets category. Please try again or provide one.',
+                        ephemeral: true
+                    });
+                }
+            }
+
             await TicketConfig.findOneAndUpdate(
                 { serverId },
                 {
@@ -92,7 +116,8 @@ module.exports = {
                     adminRoleId: adminRole.id,
                     status,
                     ownerId: guild.ownerId,
-                    categoryId
+                    categoryId,
+                    closedTicketsCategoryId: closedCategoryId
                 },
                 { upsert: true }
             );
@@ -117,6 +142,7 @@ module.exports = {
                 **Transcript Channel:** <#${config.transcriptChannelId ?? 'Not set'}>
                 **Admin Role:** <@&${config.adminRoleId}>
                 **Ticket Category:** ${config.categoryId ? `<#${config.categoryId}>` : 'Not set'}
+                **Closed Tickets Category:** ${config.closedTicketsCategoryId ? `<#${config.closedTicketsCategoryId}>` : 'Not set'}
                 **Status:** ${config.status ? '🟢 Enabled' : '🔴 Disabled'}
                 `)
                 .setFooter({ text: 'Ticket Configuration', iconURL: cmdIcons.dotIcon })
