@@ -320,10 +320,10 @@ async function handleTicketModalSubmit(interaction, client) {
             .setFooter({ text: 'Your satisfaction is our priority', iconURL: ticketIcons.heartIcon })
             .setTimestamp();
 
-        const claimButton = new ButtonBuilder().setCustomId(`claim_ticket_${ticketId}`).setLabel('Claim Ticket').setStyle(ButtonStyle.Success).setEmoji('👉');
-        const pinButton = new ButtonBuilder().setCustomId(`pin_ticket_${ticketId}`).setLabel('Pin Ticket').setStyle(ButtonStyle.Secondary).setEmoji('📌');
+        const claimButton = new ButtonBuilder().setCustomId(`claim_ticket_${ticketId}`).setLabel('Claim Ticket').setStyle(ButtonStyle.Success).setEmoji('👋');
+        const pinButton = new ButtonBuilder().setCustomId(`pin_ticket_${ticketId}`).setLabel('Pin Ticket').setStyle(ButtonStyle.Primary).setEmoji('📌');
         const closeButton = new ButtonBuilder().setCustomId(`close_ticket_${ticketId}`).setLabel('Close Ticket').setStyle(ButtonStyle.Danger).setEmoji('🔒');
-        const deleteButton = new ButtonBuilder().setCustomId(`delete_ticket_${ticketId}`).setLabel('Delete Ticket').setStyle(ButtonStyle.Danger).setEmoji('❌');
+        const deleteButton = new ButtonBuilder().setCustomId(`delete_ticket_${ticketId}`).setLabel('Delete Ticket').setStyle(ButtonStyle.Danger).setEmoji('✖');
 
         const actionRow1 = new ActionRowBuilder().addComponents(claimButton, pinButton);
         const actionRow2 = new ActionRowBuilder().addComponents(closeButton, deleteButton);

@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const QuarantineConfig = require('../../models/qurantine/quarantineConfig');
+const { ensureQuarantineRolePosition } = require('../../utils/quarantineRolePosition')
 const checkPermissions = require('../../utils/checkPermissions');
 const cmdIcons = require('../../UI/icons/commandicons');
 module.exports = {
@@ -34,7 +35,20 @@ module.exports = {
                 name: 'Quarantine',
                 color: '#FF00FF',
                 permissions: []
+            }).catch(err => {
+                console.error('[ERROR] Failed to create quarantine role:', err);
+                throw err;
             });
+
+            console.log('[DEBUG] Created quarantine role:', quarantineRole.id);
+            console.log('[DEBUG] Guild id:', guild.id);
+            console.log('[DEBUG] guild.members exists?', !!guild.members);
+            console.log('[DEBUG] guild.members.me?', guild.members?.me ? `${guild.members.me.user?.tag} (${guild.members.me.id})` : 'N/A');
+            console.log('[DEBUG] guild.members.cache size:', guild.members?.cache?.size ?? 'N/A');
+            console.log('[DEBUG] client user id:', interaction.client?.user?.id);
+
+
+            await ensureQuarantineRolePosition(guildId, quarantineRole.id);
 
             for (const channel of guild.channels.cache.values()) {
                 if (!channel.permissionOverwrites) continue;
@@ -46,6 +60,14 @@ module.exports = {
                 }
             }
             
+            // make sure guild caches are ready
+            await guild.fetch().catch(() => null);
+
+            // attempt to position the role (retry inside the utility)
+            const positioned = await ensureQuarantineRolePosition(guild, quarantineRole.id);
+            if (!positioned) {
+              console.warn('[WARN] ensureQuarantineRolePosition did not confirm success. Continuing but role may be misplaced.');
+            }
             
             // Create Jail Channel
             const quarantineChannel = await guild.channels.create({
@@ -62,6 +84,8 @@ module.exports = {
             config.quarantineRoleId = quarantineRole.id;
             config.quarantineChannelId = quarantineChannel.id;
             await config.save();
+
+            await ensureQuarantineRolePosition(guildId, config.quarantineRoleId);
 
             interaction.editReply({ content: '✅ Quarantine system enabled successfully!' });
         } 
@@ -83,11 +107,11 @@ module.exports = {
         }
     } else {
         const embed = new EmbedBuilder()
-            .setColor('#3498db')
+            .setColor('#aa00ffff')
             .setAuthor({ 
                 name: "Alert!", 
                 iconURL: cmdIcons.dotIcon,
-                url: "https://discord.gg/xQF9f9yUEM"
+                url: "https://discord.gg/Ec9V5cV26f"
             })
             .setDescription('- This command can only be used through slash commands!\n- Please use `/setup-quarantine`')
             .setTimestamp();

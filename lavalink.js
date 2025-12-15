@@ -2,10 +2,10 @@
 module.exports = {
     enabled: true, 
     lavalink: {
-      name: "CloudOX",
-      password: "cocaine",
-      host: "nexus.voidhosting.vip",
-      port:  6004,
+      name: "AYANO LAVA",
+      password: "AYANO",
+      host: "194.58.66.44",
+      port:  3660,
       secure: false
     }
 };           
