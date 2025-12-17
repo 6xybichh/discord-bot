@@ -32,28 +32,28 @@ const loadEventHandlers = async (client) => {
     
     require('./events/ticketHandler')(client);
     log('Ticket Handler loaded');
-     require('./events/voiceChannelHandler')(client);
-    // log('Voice Channel Handler loaded');
-     require('./events/autorole')(client);
-    // log('Autorole Handler loaded');
-     require('./events/nqn')(client);
-    // log('NQN Handler loaded');
-     require('./events/afkHandler')(client);
-    // log('AFK Handler loaded');
-     require('./events/youTubeHandler')(client);
-    // log('YouTube Notifier loaded');
-     require('./events/twitchHandler')(client);
-    // log('Twitch Notifier loaded');
-     require('./events/facebookHandler')(client);
-    // log('Facebook Notifier loaded');
-     require('./events/instagramHandler')(client);
-    // log('Instagram Notifier loaded');
+    require('./events/voiceChannelHandler')(client);
+    log('Voice Channel Handler loaded');
+    require('./events/autorole')(client);
+    log('Autorole Handler loaded');
+    require('./events/nqn')(client);
+    log('NQN Handler loaded');
+    require('./events/afkHandler')(client);
+    log('AFK Handler loaded');
+    require('./events/youTubeHandler')(client);
+    log('YouTube Notifier loaded');
+    require('./events/twitchHandler')(client);
+    log('Twitch Notifier loaded');
+    require('./events/facebookHandler')(client);
+    log('Facebook Notifier loaded');
+    require('./events/instagramHandler')(client);
+    log('Instagram Notifier loaded');
     
     await delay(3000); 
     
     try {
         require('./events/music')(client);
-       // log('Lavalink Music System loaded');
+        log('Lavalink Music System loaded');
     } catch (error) {
         console.error('[ERROR] Failed to load music system:', error);
     }
