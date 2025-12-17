@@ -14,9 +14,9 @@
         "utility": true,
         "moderation": true,
         "core" :true,
-        "lavalink": true,
-        "fun": true,
-        "distube": true,
+        "lavalink": false,
+        "fun": false,
+        "distube": false,
         "setups": true,
         "audio": true
     }
