@@ -63,5 +63,8 @@ const loadEventHandlers = async (client) => {
     require('./handlers/distube')(client);
     log('Distube Music System loaded');
     
+    require('./handlers/transcriptCleanupHandler').startTranscriptCleanup();
+    log('Transcript Cleanup Handler loaded');
+
     console.log(`\n[STATUS] All systems initialized successfully at ${new Date().toLocaleTimeString()}\n`);
 };

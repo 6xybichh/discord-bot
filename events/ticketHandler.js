@@ -119,6 +119,10 @@ module.exports = (client) => {
             await handleTicketPin(interaction, client);
         }
 
+        else if (interaction.isButton() && interaction.customId.startsWith('unpin_ticket_')) {
+            await handleTicketUnpin(interaction, client);
+        }
+
         else if (interaction.isButton() && interaction.customId.startsWith('delete_ticket_')) {
             await handleTicketDelete(interaction, client);
         }
@@ -317,8 +321,8 @@ async function handleTicketModalSubmit(interaction, client) {
             .setTitle(`${ticketTypeDisplay} Ticket`)
             .setColor('#FF6B00')
             .setDescription(
-                '❌ **Please provide us with a detailed description of your issue!**\n' +
-                '❌ **The support staff are human volunteers, so please be patient – you\'ll get an answer as soon as possible.**\n\n' +
+                '<a:modIcon:1450713421392646298> **Please provide us with a detailed description of your issue!**\n' +
+                '<a:modIcon:1450713421392646298> **The support staff are human volunteers, so please be patient – you\'ll get an answer as soon as possible.**\n\n' +
                 `**The Name Detail Of ${ticketTypeDisplay.toLowerCase()} You Want To Buy.**\n\n` +
                 '```\n' +
                 (reason || '[No reason provided]') + '\n' +
@@ -383,65 +387,6 @@ async function handleTicketClose(interaction, client) {
 
 
     try {
-        const { attachment, fileName } = await generateTranscript(interaction.channel, client);
-
-        
-   
-        const ticketOwner = await client.users.fetch(userId).catch(() => null);
-        if (ticketOwner) {
-            const dmEmbed = new EmbedBuilder()
-                .setColor(0x0099ff)
-                .setAuthor({ name: "Ticket Closed", iconURL: ticketIcons.correctIcon })
-                .setDescription(`Your ticket in **${guild.name}** has been closed.`)
-                .setTimestamp()
-                .setFooter({ text: 'Thanks for using our support system!', iconURL: ticketIcons.modIcon });
-        
-            try {
-                const dmMessage = await ticketOwner.send({
-                    content: 'Here is your ticket transcript:',
-                    embeds: [dmEmbed],
-                    files: [attachment]
-                });
-        
-                const fileUrl = dmMessage.attachments.first()?.url;
-                if (fileUrl) {
-                    await ticketOwner.send(`🔗 **View Transcript**: ${fileUrl}`);
-                }
-        
-            } catch (err) {
-                console.warn(`Could not DM user ${ticketOwner.tag}:`, err.message);
-            }
-        }
-        
-
-       
-        if (config.transcriptChannelId) {
-            const logChannel = guild.channels.cache.get(config.transcriptChannelId);
-            if (logChannel) {
-                const logEmbed = new EmbedBuilder()
-                    .setColor('#5865F2')
-                    .setTitle('Ticket Closed')
-                    .addFields(
-                        { name: 'Ticket', value: interaction.channel.name, inline: true },
-                        { name: 'Closed By', value: user.tag, inline: true },
-                        { name: 'Original Owner', value: ticketOwner?.tag || 'Unknown', inline: true }
-                    )
-                    .setTimestamp();
-        
-                const logMsg = await logChannel.send({
-                    content: `📩 Transcript from ticket ${interaction.channel.name}`,
-                    embeds: [logEmbed],
-                    files: [attachment]
-                });
-        
-                const fileUrl = logMsg.attachments.first()?.url;
-                if (fileUrl) {
-                    await logChannel.send(`🔗 **View Transcript**: ${fileUrl}`);
-                }
-            }
-        }
-        
-
         await interaction.followUp({ 
             content: '✅ Ticket closing in 5 seconds...',
             ephemeral: true 
@@ -487,7 +432,7 @@ async function handleTicketClose(interaction, client) {
 
                         await channel.send({ embeds: [closedEmbed], components: [closedActionRow] });
                         
-                        // Update closedAt timestamp
+                        // Update closedAt timestamp (keep record for reopening)
                         await TicketUserData.updateOne({ userId, guildId: guild.id }, { closedAt: new Date() });
                         console.log(`Moved ticket channel ${channel.id} to closed tickets category`);
                     } catch (moveErr) {
@@ -497,9 +442,12 @@ async function handleTicketClose(interaction, client) {
                     // Delete if no closed tickets category is configured
                     await channel.delete();
                     console.log(`Deleted ticket channel: ${channel.id}`);
+                    // Delete record if no archive category exists
+                    await TicketUserData.deleteOne({ userId, guildId: guild.id });
+                } else {
+                    // If archive category exists, keep the record
+                    return;
                 }
-
-                await TicketUserData.deleteOne({ userId, guildId: guild.id });
 
             } catch (err) {
                 console.error("Error while closing ticket:", err);
@@ -507,7 +455,7 @@ async function handleTicketClose(interaction, client) {
         }, 5000);
 
     } catch (err) {
-        console.error("Error generating transcript:", err);
+        console.error("Error closing ticket:", err);
         return interaction.followUp({ 
             content: '❌ Failed to close ticket. Please try again.',
             ephemeral: true 
@@ -695,7 +643,69 @@ async function deleteOldClosedTickets(client) {
 
             try {
                 const channel = guild.channels.cache.get(ticket.ticketChannelId);
+                const config = await TicketConfig.findOne({ serverId: ticket.guildId });
+                
+                // Generate transcript before deleting
                 if (channel) {
+                    try {
+                        const { attachment, fileName } = await generateTranscript(channel, client);
+                        const ticketOwner = await client.users.fetch(ticket.userId).catch(() => null);
+                        
+                        // Send transcript to user
+                        if (ticketOwner) {
+                            const dmEmbed = new EmbedBuilder()
+                                .setColor(0xFF0000)
+                                .setAuthor({ name: "Ticket Auto-Deleted", iconURL: ticketIcons.modIcon })
+                                .setDescription(`Your ticket in **${guild.name}** has been automatically deleted.`)
+                                .setTimestamp()
+                                .setFooter({ text: 'Thanks for using our support system!', iconURL: ticketIcons.modIcon });
+                        
+                            try {
+                                const dmMessage = await ticketOwner.send({
+                                    content: 'Here is your ticket transcript:',
+                                    embeds: [dmEmbed],
+                                    files: [attachment]
+                                });
+                        
+                                const fileUrl = dmMessage.attachments.first()?.url;
+                                if (fileUrl) {
+                                    await ticketOwner.send(`🔗 **View Transcript**: ${fileUrl}`);
+                                }
+                            } catch (err) {
+                                console.warn(`Could not DM user ${ticketOwner.tag}:`, err.message);
+                            }
+                        }
+                        
+                        // Send transcript to log channel
+                        if (config && config.transcriptChannelId) {
+                            const logChannel = guild.channels.cache.get(config.transcriptChannelId);
+                            if (logChannel) {
+                                const logEmbed = new EmbedBuilder()
+                                    .setColor('#FF0000')
+                                    .setTitle('Ticket Auto-Deleted')
+                                    .addFields(
+                                        { name: 'Ticket', value: channel.name, inline: true },
+                                        { name: 'Reason', value: '24h retention expired', inline: true },
+                                        { name: 'Original Owner', value: ticketOwner?.tag || 'Unknown', inline: true }
+                                    )
+                                    .setTimestamp();
+                        
+                                const logMsg = await logChannel.send({
+                                    content: `📩 Transcript from ticket ${channel.name}`,
+                                    embeds: [logEmbed],
+                                    files: [attachment]
+                                });
+                        
+                                const fileUrl = logMsg.attachments.first()?.url;
+                                if (fileUrl) {
+                                    await logChannel.send(`🔗 **View Transcript**: ${fileUrl}`);
+                                }
+                            }
+                        }
+                    } catch (transcriptErr) {
+                        console.warn(`Failed to generate transcript for auto-deleted ticket ${channel.id}:`, transcriptErr.message);
+                    }
+                    
                     await channel.delete('Auto-deleted: 24h closed ticket retention expired');
                     console.log(`Auto-deleted closed ticket: ${channel.name} (${channel.id})`);
                 }
@@ -828,17 +838,83 @@ async function handleTicketPin(interaction, client) {
     }
 
     try {
+        // Ensure the bot has permission to edit channel names
+        const botMember = guild.members.me || guild.members.cache.get(client.user.id);
+        if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+            return interaction.followUp({
+                content: '❌ I need the `Manage Channels` permission to pin (rename) tickets.',
+                ephemeral: true
+            });
+        }
+
+        const currentName = channel.name || '';
+        if (currentName.startsWith('📌')) {
+            return interaction.followUp({ content: 'ℹ️ This ticket is already pinned.', ephemeral: true });
+        }
+
+        const newName = `📌${currentName}`;
+        try {
+            await channel.setName(newName, `Pinned by ${user.tag}`);
+        } catch (err) {
+            console.error('Error renaming channel to pin:', err);
+            return interaction.followUp({ content: '❌ Failed to rename channel. Missing permissions or invalid name.', ephemeral: true });
+        }
+
+        // Store original position before moving
+        const originalPosition = channel.position;
+
+        // Auto-position: place at top if no pinned tickets, or just below the last pinned ticket
+        try {
+            if (channel.parent) {
+                const categoryChannels = channel.parent.children.cache.values();
+                let lastPinnedPosition = -1;
+                
+                // Find the last pinned ticket channel
+                for (const ch of categoryChannels) {
+                    if (ch.name.startsWith('📌') && ch.id !== channel.id) {
+                        lastPinnedPosition = ch.position;
+                    }
+                }
+
+                // Set position: 0 if no pinned tickets, or right after the last one
+                const targetPosition = lastPinnedPosition === -1 ? 0 : lastPinnedPosition + 1;
+                await channel.setPosition(targetPosition);
+            }
+        } catch (posErr) {
+            console.warn('Warning: Failed to reposition pinned ticket channel:', posErr);
+            // Non-critical; continue with pin
+        }
+
+        // Save original position to database for later restoration
+        try {
+            await TicketUserData.updateOne(
+                { ticketChannelId: channel.id },
+                { $set: { originalPosition } }
+            );
+        } catch (dbErr) {
+            console.warn('Warning: Failed to save original position:', dbErr);
+            // Non-critical; continue with pin
+        }
+
         const pinEmbed = new EmbedBuilder()
             .setColor('#FFD700')
-            .setAuthor({ name: 'Ticket Pinned', iconURL: '📌' })
+            .setAuthor({ name: 'Ticket Pinned', iconURL: ticketIcons.modIcon })
             .setDescription(`This ticket has been pinned for quick access.`)
             .setTimestamp();
 
-        await channel.send({ embeds: [pinEmbed] });
+        const unpinButton = new ButtonBuilder()
+            .setCustomId(`unpin_ticket_${channel.id}`)
+            .setLabel('Unpin Ticket')
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji('📍');
 
-        return interaction.followUp({ 
+        const actionRow = new ActionRowBuilder().addComponents(unpinButton);
+
+        await channel.send({ embeds: [pinEmbed], components: [actionRow] });
+
+        return interaction.followUp({
             content: '✅ Ticket pinned!',
-            ephemeral: true 
+            ephemeral: true
         });
     } catch (err) {
         console.error(`Error pinning ticket:`, err);
@@ -874,6 +950,63 @@ async function handleTicketDelete(interaction, client) {
     }
 
     try {
+        // Generate transcript
+        const { attachment, fileName } = await generateTranscript(channel, client);
+        const ticketData = await TicketUserData.findOne({ ticketChannelId: channel.id });
+        const ticketOwner = await client.users.fetch(ticketData?.userId).catch(() => null);
+        
+        // Send transcript to user
+        if (ticketOwner) {
+            const dmEmbed = new EmbedBuilder()
+                .setColor(0xFF0000)
+                .setAuthor({ name: "Ticket Deleted", iconURL: ticketIcons.modIcon })
+                .setDescription(`Your ticket in **${guild.name}** has been deleted.`)
+                .setTimestamp()
+                .setFooter({ text: 'Thanks for using our support system!', iconURL: ticketIcons.modIcon });
+        
+            try {
+                const dmMessage = await ticketOwner.send({
+                    content: 'Here is your ticket transcript:',
+                    embeds: [dmEmbed],
+                    files: [attachment]
+                });
+        
+                const fileUrl = dmMessage.attachments.first()?.url;
+                if (fileUrl) {
+                    await ticketOwner.send(`🔗 **View Transcript**: ${fileUrl}`);
+                }
+            } catch (err) {
+                console.warn(`Could not DM user ${ticketOwner.tag}:`, err.message);
+            }
+        }
+        
+        // Send transcript to log channel
+        if (config.transcriptChannelId) {
+            const logChannel = guild.channels.cache.get(config.transcriptChannelId);
+            if (logChannel) {
+                const logEmbed = new EmbedBuilder()
+                    .setColor('#FF0000')
+                    .setTitle('Ticket Deleted')
+                    .addFields(
+                        { name: 'Ticket', value: channel.name, inline: true },
+                        { name: 'Deleted By', value: user.tag, inline: true },
+                        { name: 'Original Owner', value: ticketOwner?.tag || 'Unknown', inline: true }
+                    )
+                    .setTimestamp();
+        
+                const logMsg = await logChannel.send({
+                    content: `📩 Transcript from ticket ${channel.name}`,
+                    embeds: [logEmbed],
+                    files: [attachment]
+                });
+        
+                const fileUrl = logMsg.attachments.first()?.url;
+                if (fileUrl) {
+                    await logChannel.send(`🔗 **View Transcript**: ${fileUrl}`);
+                }
+            }
+        }
+
         const deleteEmbed = new EmbedBuilder()
             .setColor('#FF0000')
             .setAuthor({ name: 'Ticket Deleted', iconURL: ticketIcons.modIcon })
@@ -1040,6 +1173,95 @@ async function handleDeleteClosedTicket(interaction, client) {
         console.error(`Error deleting closed ticket:`, err);
         return interaction.followUp({ 
             content: '❌ Failed to delete closed ticket.',
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleTicketUnpin(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const { guild, user, channel } = interaction;
+    const config = await TicketConfig.findOne({ serverId: guild.id });
+    
+    if (!config) {
+        return interaction.followUp({ 
+            content: '❌ Ticket configuration not found.',
+            ephemeral: true 
+        });
+    }
+
+    const isAdmin = interaction.member.roles.cache.has(config.adminRoleId) || 
+                   user.id === config.ownerId || 
+                   interaction.member.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    if (!isAdmin) {
+        return interaction.followUp({ 
+            content: '❌ Only staff members can unpin tickets.',
+            ephemeral: true 
+        });
+    }
+
+    try {
+        // Ensure the bot has permission to edit channel names
+        const botMember = guild.members.me || guild.members.cache.get(client.user.id);
+        if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+            return interaction.followUp({
+                content: '❌ I need the `Manage Channels` permission to unpin tickets.',
+                ephemeral: true
+            });
+        }
+
+        const currentName = channel.name || '';
+        if (!currentName.startsWith('📌')) {
+            return interaction.followUp({ content: 'ℹ️ This ticket is not pinned.', ephemeral: true });
+        }
+
+        const newName = currentName.slice(1); // Remove the 📌 emoji
+        try {
+            await channel.setName(newName, `Unpinned by ${user.tag}`);
+        } catch (err) {
+            console.error('Error renaming channel to unpin:', err);
+            return interaction.followUp({ content: '❌ Failed to rename channel. Missing permissions or invalid name.', ephemeral: true });
+        }
+
+        // Reposition: restore to original position
+        try {
+            const ticketData = await TicketUserData.findOne({ ticketChannelId: channel.id });
+            if (ticketData?.originalPosition !== undefined && ticketData.originalPosition !== null) {
+                // Restore to original position
+                await channel.setPosition(ticketData.originalPosition);
+                // Clear the stored position after restoration
+                await TicketUserData.updateOne({ ticketChannelId: channel.id }, { $unset: { originalPosition: 1 } });
+            } else {
+                // Fallback: move to end of category if no stored position
+                if (channel.parent) {
+                    const categoryChannels = Array.from(channel.parent.children.cache.values());
+                    const maxPosition = Math.max(...categoryChannels.map(ch => ch.position), -1);
+                    await channel.setPosition(maxPosition + 1);
+                }
+            }
+        } catch (posErr) {
+            console.warn('Warning: Failed to reposition unpinned ticket channel:', posErr);
+            // Non-critical; continue with unpin
+        }
+
+        const unpinEmbed = new EmbedBuilder()
+            .setColor('#808080')
+            .setAuthor({ name: 'Ticket Unpinned', iconURL: ticketIcons.modIcon })
+            .setDescription(`This ticket has been unpinned.`)
+            .setTimestamp();
+
+        await channel.send({ embeds: [unpinEmbed] });
+
+        return interaction.followUp({
+            content: '✅ Ticket unpinned!',
+            ephemeral: true
+        });
+    } catch (err) {
+        console.error(`Error unpinning ticket:`, err);
+        return interaction.followUp({ 
+            content: '❌ Failed to unpin ticket.',
             ephemeral: true 
         });
     }
